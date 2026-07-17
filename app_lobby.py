@@ -3,11 +3,11 @@ import random
 import time
 from streamlit_autorefresh import st_autorefresh
 
-# 1. Trigger automatic background refresh every 1 second to keep the countdown accurate
+# 1. Trigger automatic background refresh every 1 second to keep clocks and players synced
 st_autorefresh(interval=1000, key="gamerefresh")
 
-st.title("🧩 Mastermind Mania")
-st.caption("Multi-Mode Split-Screen Code Cracking Arena")
+st.title("🧩 Mastermind Mania: Mass Multiplayer Edition")
+st.caption("Crack codes together in real-time rooms")
 
 # 2. Setup Global Server Memory (Persists across devices)
 @st.cache_resource(validate=None)
@@ -22,20 +22,17 @@ st.sidebar.header("🚪 Matchmaking & Security")
 room_id = st.sidebar.text_input("Enter Room Code to Join:", value="Lobby").strip()
 room_passcode = st.sidebar.text_input("Enter Lobby Passcode:", type="password", value="1234").strip()
 
-# Initialize the room state inside server memory if it's completely new
+# Initialize the dynamic room state inside server memory if it's completely new
 if room_id not in server:
     server[room_id] = {
         "passcode": room_passcode if room_passcode else "1234",
-        "game_mode": "Battle Mode (Crack Each Other)",
+        "game_mode": "Race Mode (Race the Clock)",
         "digits": 5,
-        "p1_name": "Player 1",
-        "p2_name": "Player 2",
-        "p1_secret": None,
-        "p2_secret": None,
+        "players": {},       # Dynamic Dict: {"PlayerName": {"secret": None, "guesses": []}}
+        "turn_order": [],    # Keeps track of player sequence for Battle Mode
+        "current_idx": 0,    # Tracks index of whose turn it is in Battle Mode
         "server_secret": None,
-        "p1_guesses": [],
-        "p2_guesses": [],
-        "turn": "Setup", # "Setup", "Player 1", "Player 2", "Race Active", "Game Over"
+        "turn": "Setup",     # "Setup", "Active", "Game Over"
         "end_time": None,
         "winner": None
     }
@@ -49,15 +46,32 @@ if game["passcode"] != room_passcode:
     st.stop()
 
 st.sidebar.markdown("---")
-st.sidebar.header("👤 Your Identity")
-st.sidebar.info(f"Connected to Room: **{room_id}**")
+st.sidebar.header("👤 Player Identity")
+st.sidebar.info(f"Room: **{room_id}** | Mode: **{game['game_mode']}**")
 
-my_role = st.sidebar.radio("Who are you?", ["Observer", "Player 1", "Player 2"])
+# Dynamic Registration Input
+player_name = st.sidebar.text_input("Enter Your Name:", value="", max_chars=12).strip()
 
-if my_role == "Player 1":
-    game["p1_name"] = st.sidebar.text_input("Edit Your Name (P1):", value=game["p1_name"])
-elif my_role == "Player 2":
-    game["p2_name"] = st.sidebar.text_input("Edit Your Name (P2):", value=game["p2_name"])
+if player_name:
+    if player_name not in game["players"]:
+        if game["turn"] == "Setup":
+            if st.sidebar.button(f"🚪 Join Lobby as '{player_name}'"):
+                game["players"][player_name] = {"secret": None, "guesses": []}
+                st.sidebar.success(f"Successfully joined!")
+                st.rerun()
+        else:
+            st.sidebar.info("👀 Match already active. You are spectating as an Observer.")
+    else:
+        st.sidebar.success(f"🟢 Active Session: **{player_name}**")
+else:
+    st.sidebar.warning("⚠️ Type your name to join or play.")
+
+# Display all connected lobby members dynamically
+if game["players"]:
+    st.sidebar.markdown("### 👥 Connected Players:")
+    for p in game["players"]:
+        status = "✅ Ready" if (game["game_mode"] == "Race Mode (Race the Clock)" or game["players"][p]["secret"]) else "⏳ Choosing Code..."
+        st.sidebar.write(f"- **{p}** ({status})")
 
 
 # Helper function to calculate Bulls and Cows
@@ -73,7 +87,7 @@ def generate_server_secret(num_digits):
 
 # --- TIMING SYSTEM MECHANICS (RACE MODE ONLY) ---
 time_left = 0
-if game["turn"] == "Race Active" and game["end_time"] is not None:
+if game["turn"] == "Active" and game["game_mode"] == "Race Mode (Race the Clock)" and game["end_time"] is not None:
     time_left = max(0, int(game["end_time"] - time.time()))
     if time_left == 0 and not game["winner"]:
         game["winner"] = "Timeout"
@@ -83,199 +97,171 @@ if game["turn"] == "Race Active" and game["end_time"] is not None:
 
 # --- MAIN SCREEN PHASE 1: LOBBY SETUP & CONFIGURATION ---
 if game["turn"] == "Setup":
-    st.subheader("⚙️ Step 1: Configure Match Settings & Keys")
+    st.subheader("⚙️ Step 1: Configure Match Settings")
     
-    # Game rules selectors (Only accessible during setup)
+    # Configuration options are visible to anyone in setup, but lockable when match starts
     col_cfg1, col_cfg2 = st.columns(2)
     with col_cfg1:
         game["game_mode"] = st.selectbox(
             "Select Game Mode:", 
-            ["Battle Mode (Crack Each Other)", "Race Mode (Race the Clock)"]
+            ["Race Mode (Race the Clock)", "Battle Mode (Loop Challenge)"]
         )
     with col_cfg2:
         game["digits"] = st.selectbox("Select Code Length:", [4, 5], index=1)
 
     st.markdown("---")
 
-    # Mode A: Battle Setup (Players choice input)
-    if game["game_mode"] == "Battle Mode (Crack Each Other)":
-        st.warning(f"⚠️ Never share screens! Both players must input a unique {game['digits']}-digit code.")
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown(f"### 🔴 {game['p1_name']}")
-            if game["p1_secret"] is not None:
-                st.success("✅ Code safely locked!")
-            elif my_role == "Player 1":
-                p1_input = st.text_input(f"Create your secret {game['digits']}-digit code:", type="password", key="p1_set_input")
-                if st.button("Lock Code (P1)", key="p1_lock_btn"):
-                    if len(p1_input) == game["digits"] and len(set(p1_input)) == game["digits"] and p1_input.isdigit():
-                        game["p1_secret"] = p1_input
-                        st.success("Locked!")
+    # Mode A: Battle Setup (Every player inputs their custom code)
+    if game["game_mode"] == "Battle Mode (Loop Challenge)":
+        st.warning(f"🔒 **Battle Mode active:** Enter a secret {game['digits']}-digit sequence. Keep your screen hidden!")
+        
+        if player_name in game["players"]:
+            my_data = game["players"][player_name]
+            if my_data["secret"] is not None:
+                st.success("✅ Your secret code is locked in! Waiting for other participants.")
+            else:
+                secret_input = st.text_input(f"Create your firewall passkey ({game['digits']} unique digits):", type="password")
+                if st.button("Lock Passkey"):
+                    if len(secret_input) == game["digits"] and len(set(secret_input)) == game["digits"] and secret_input.isdigit():
+                        my_data["secret"] = secret_input
+                        st.success("Passkey secured!")
                         st.rerun()
                     else:
-                        st.error(f"Must be exactly {game['digits']} unique digits!")
-            else:
-                st.caption("⏳ Waiting for Player 1 to lock their code...")
+                        st.error(f"Error: Passkey must be exactly {game['digits']} completely unique digits.")
+        else:
+            st.caption("Please register in the sidebar to set a code and participate.")
 
-        with col2:
-            st.markdown(f"### 🔵 {game['p2_name']}")
-            if game["p2_secret"] is not None:
-                st.success("✅ Code safely locked!")
-            elif my_role == "Player 2":
-                p2_input = st.text_input(f"Create your secret {game['digits']}-digit code:", type="password", key="p2_set_input")
-                if st.button("Lock Code (P2)", key="p2_lock_btn"):
-                    if len(p2_input) == game["digits"] and len(set(p2_input)) == game["digits"] and p2_input.isdigit():
-                        game["p2_secret"] = p2_input
-                        st.success("Locked!")
-                        st.rerun()
-                    else:
-                        st.error(f"Must be exactly {game['digits']} unique digits!")
-            else:
-                st.caption("⏳ Waiting for Player 2 to lock their code...")
+        # Master Start Condition for Battle Mode (Min 2 players, all must lock codes)
+        all_ready = len(game["players"]) >= 2 and all(p["secret"] is not None for p in game["players"].values())
+        if all_ready:
+            if st.button("🚀 Start Multiplayer Battle Arena"):
+                game["turn_order"] = list(game["players"].keys())
+                random.shuffle(game["turn_order"]) # Shuffle turn sequence for fun randomness
+                game["current_idx"] = 0
+                game["turn"] = "Active"
+                st.rerun()
 
-        # Advance automatically for Battle Mode
-        if game["p1_secret"] and game["p2_secret"]:
-            game["turn"] = "Player 1"
-            st.rerun()
-
-    # Mode B: Race Setup (Server Generated)
+    # Mode B: Race Setup (Server Generated - Everyone plays instantly)
     else:
-        st.info(f"🏃 Race Mode: The server will generate a hidden {game['digits']}-digit code. The fastest player to solve it wins!")
-        if st.button("🚀 Initialization Sequence: Start Race"):
-            game["server_secret"] = generate_server_secret(game["digits"])
-            # 3 minutes (180s) for 4-digits || 5 minutes (300s) for 5-digits
-            duration = 300 if game["digits"] == 5 else 180
-            game["end_time"] = time.time() + duration
-            game["turn"] = "Race Active"
-            st.rerun()
+        st.info(f"🏃 **Race Mode active:** The server will generate a random {game['digits']}-digit key. Everyone plays at the same time!")
+        if len(game["players"]) >= 1:
+            if st.button("🚀 Launch Live Code Race"):
+                game["server_secret"] = generate_server_secret(game["digits"])
+                duration = 300 if game["digits"] == 5 else 180
+                game["end_time"] = time.time() + duration
+                game["turn"] = "Active"
+                st.rerun()
+        else:
+            st.caption("Waiting for at least one player to join the room before starting.")
 
 
 # --- MAIN SCREEN PHASE 2: ACTIVE GAME MODES ---
 else:
-    st.subheader("🎯 Step 2: Crack the Target Systems")
+    st.subheader("🎯 Step 2: Break the Firewall")
     
-    # Global Display Headers for Winner or Ticking Clock
+    # End-game display states
     if game["winner"]:
         if game["winner"] == "Timeout":
-            st.error(f"🚨 GAME OVER! The countdown timer expired! Nobody cracked the code. The answer was: `{game['server_secret']}`")
+            st.error(f"🚨 GAME OVER! Time ran out. Nobody cracked the system firewall! The master code was: `{game['server_secret']}`")
         else:
             st.balloons()
-            st.success(f"🎉 GAME OVER! **{game['winner']}** broke the firewall and won the game!")
+            st.success(f"🏆 VICTORY achieved! **{game['winner']}** successfully cracked the target code!")
     else:
-        if game["turn"] == "Race Active":
+        # Live HUD layouts
+        if game["game_mode"] == "Race Mode (Race the Clock)":
             mins, secs = divmod(time_left, 60)
-            st.metric("⏳ Absolute Global Time Remaining", f"{mins:02d}:{secs:02d}")
+            st.metric("⏳ Room Countdown Timer", f"{mins:02d}:{secs:02d}")
+            st.info("⚡ Real-time processing: Submit codes as fast as you can compute them!")
         else:
-            current_turn_name = game["p1_name"] if game["turn"] == "Player 1" else game["p2_name"]
-            st.info(f"⏳ Dynamic Turn Matrix: **{current_turn_name}**")
+            active_p = game["turn_order"][game["current_idx"]]
+            target_idx = (game["current_idx"] + 1) % len(game["turn_order"])
+            target_p = game["turn_order"][target_idx]
+            st.info(f"⏳ Current Turn: **{active_p}** ➡️ Targeting: **{target_p}**'s system!")
 
-    col1, col2 = st.columns(2)
-
-    # --- PLAYER 1 INTERACTIVE CONTAINER ---
-    with col1:
-        st.markdown(f"### 🔴 {game['p1_name']}'s Board")
-        
-        # Determine if Player 1 is authorized to input an assessment right now
-        p1_can_act = False
-        if not game["winner"]:
-            if game["turn"] == "Player 1" and my_role == "Player 1":
-                p1_can_act = True
-            elif game["turn"] == "Race Active" and my_role == "Player 1":
-                p1_can_act = True
-
-        if p1_can_act:
-            p1_guess = st.text_input(f"Enter your {game['digits']}-digit assessment:", max_chars=game["digits"], key="p1_assessment")
-            if st.button("Submit Assessment (P1)", key="p1_sub_btn"):
-                if len(p1_guess) == game["digits"] and len(set(p1_guess)) == game["digits"] and p1_guess.isdigit():
-                    
-                    # Logic branch based on game rules
-                    if game["game_mode"] == "Race Mode (Race the Clock)":
-                        b, c = get_bulls_and_cows(game["server_secret"], p1_guess)
-                        game["p1_guesses"].append((p1_guess, b, c))
-                        if b == game["digits"]:
-                            game["winner"] = game["p1_name"]
-                            game["turn"] = "Game Over"
-                    else:
-                        b, c = get_bulls_and_cows(game["p2_secret"], p1_guess)
-                        game["p1_guesses"].append((p1_guess, b, c))
-                        if b == game["digits"]:
-                            game["winner"] = game["p1_name"]
-                            game["turn"] = "Game Over"
-                        else:
-                            game["turn"] = "Player 2"
-                    st.rerun()
-                else:
-                    st.error(f"Entry requires exactly {game['digits']} unique digits!")
-        elif game["turn"] == "Player 2" and not game["winner"]:
-            st.caption("Waiting for opponent's turn loop...")
-        elif game["turn"] == "Race Active" and my_role != "Player 1" and not game["winner"]:
-            st.caption("Synchronizing data feeds...")
-
-        if game["p1_guesses"]:
-            st.markdown("**History Log:**")
-            for g, b, c in reversed(game['p1_guesses']):
-                st.write(f"🔢 `{g}` ➡️ 🐂 **{b}** | 🐄 **{c}**")
-
-    # --- PLAYER 2 INTERACTIVE CONTAINER ---
-    with col2:
-        st.markdown(f"### 🔵 {game['p2_name']}'s Board")
-        
-        # Determine if Player 2 is authorized to input an assessment right now
-        p2_can_act = False
-        if not game["winner"]:
-            if game["turn"] == "Player 2" and my_role == "Player 2":
-                p2_can_act = True
-            elif game["turn"] == "Race Active" and my_role == "Player 2":
-                p2_can_act = True
-
-        if p2_can_act:
-            p2_guess = st.text_input(f"Enter your {game['digits']}-digit assessment:", max_chars=game["digits"], key="p2_assessment")
-            if st.button("Submit Assessment (P2)", key="p2_sub_btn"):
-                if len(p2_guess) == game["digits"] and len(set(p2_guess)) == game["digits"] and p2_guess.isdigit():
-                    
-                    # Logic branch based on game rules
-                    if game["game_mode"] == "Race Mode (Race the Clock)":
-                        b, c = get_bulls_and_cows(game["server_secret"], p2_guess)
-                        game["p2_guesses"].append((p2_guess, b, c))
-                        if b == game["digits"]:
-                            game["winner"] = game["p2_name"]
-                            game["turn"] = "Game Over"
-                    else:
-                        b, c = get_bulls_and_cows(game["p1_secret"], p2_guess)
-                        game["p2_guesses"].append((p2_guess, b, c))
-                        if b == game["digits"]:
-                            game["winner"] = game["p2_name"]
-                            game["turn"] = "Game Over"
-                        else:
-                            game["turn"] = "Player 1"
-                    st.rerun()
-                else:
-                    st.error(f"Entry requires exactly {game['digits']} unique digits!")
-        elif game["turn"] == "Player 1" and not game["winner"]:
-            st.caption("Waiting for opponent's turn loop...")
-        elif game["turn"] == "Race Active" and my_role != "Player 2" and not game["winner"]:
-            st.caption("Synchronizing data feeds...")
-
-        if game["p2_guesses"]:
-            st.markdown("**History Log:**")
-            for g, b, c in reversed(game['p2_guesses']):
-                st.write(f"🔢 `{g}` ➡️ 🐂 **{b}** | 🐄 **{c}**")
-
-    # --- SYSTEM CLEANUP OPERATIONS ---
     st.markdown("---")
-    if st.button("🔄 Dissolve & Reset Room"):
+
+    # --- RENDER PERSONAL PLAYER ACTION AREA ---
+    if player_name in game["players"] and not game["winner"]:
+        can_guess = False
+        target_secret = None
+        current_target_name = "Server"
+
+        if game["game_mode"] == "Race Mode (Race the Clock)":
+            can_guess = True
+            target_secret = game["server_secret"]
+        elif game["game_mode"] == "Battle Mode (Loop Challenge)" and player_name == game["turn_order"][game["current_idx"]]:
+            can_guess = True
+            # Target the next person in the loop
+            t_idx = (game["current_idx"] + 1) % len(game["turn_order"])
+            current_target_name = game["turn_order"][t_idx]
+            target_secret = game["players"][current_target_name]["secret"]
+
+        if can_guess:
+            st.markdown(f"### ⌨️ Your Input Dashboard (Targeting: **{current_target_name}**)")
+            guess_input = st.text_input(f"Enter your {game['digits']}-digit assessment:", max_chars=game["digits"], key=f"guess_{player_name}")
+            
+            if st.button("Submit Assessment Check"):
+                if len(guess_input) == game["digits"] and len(set(guess_input)) == game["digits"] and guess_input.isdigit():
+                    b, c = get_bulls_and_cows(target_secret, guess_input)
+                    
+                    # Record the guess history tracking structure
+                    game["players"][player_name]["guesses"].append({
+                        "guess": guess_input, "bulls": b, "cows": c, "target": current_target_name
+                    })
+                    
+                    # Victory verification
+                    if b == game["digits"]:
+                        game["winner"] = player_name
+                        game["turn"] = "Game Over"
+                    else:
+                        # Advance turns if it is Battle Mode
+                        if game["game_mode"] == "Battle Mode (Loop Challenge)":
+                            game["current_idx"] = (game["current_idx"] + 1) % len(game["turn_order"])
+                    st.rerun()
+                else:
+                    st.error(f"Assessments must contain exactly {game['digits']} unique digits.")
+        else:
+            if game["game_mode"] == "Battle Mode (Loop Challenge)":
+                st.caption(f"🔒 Waiting for **{game['turn_order'][game['current_idx']]}** to complete their calculations...")
+    elif player_name not in game["players"]:
+        st.caption("📺 Spectator Mode: Watching live arena telemetry feeds...")
+
+    # --- ARENA BATTLE LOGS (Dynamic Tab Structure for N-Players) ---
+    st.markdown("---")
+    st.subheader("📊 Global Arena History Logs")
+    
+    if game["players"]:
+        player_tabs = st.tabs(list(game["players"].keys()))
+        for idx, p_name in enumerate(game["players"]):
+            with player_tabs[idx]:
+                p_data = game["players"][p_name]
+                
+                # Vault key visibility rules
+                if game["game_mode"] == "Battle Mode (Loop Challenge)":
+                    if game["winner"] or p_name == player_name:
+                        st.markdown(f"🔑 Private System Key: `{p_data['secret']}`")
+                    else:
+                        st.markdown("🔑 Private System Key: `•••••` (Hidden)")
+                
+                # Render Guess Records Dynamically
+                if p_data["guesses"]:
+                    for attempt in reversed(p_data["guesses"]):
+                        target_str = f"Target: `{attempt['target']}` ➡️ " if game["game_mode"] == "Battle Mode (Loop Challenge)" else ""
+                        st.write(f"🔢 {target_str}Guess: `{attempt['guess']}` ➡️ 🐂 Bulls: **{attempt['bulls']}** | 🐄 Cows: **{attempt['cows']}**")
+                else:
+                    st.caption("No entry computations processed yet.")
+
+    # --- GLOBAL SYSTEM RESET OPERATIONS ---
+    st.markdown("---")
+    if st.button("🔄 Dissolve Room State & Reframe Lobby"):
         server[room_id] = {
             "passcode": game["passcode"], # Retain room password settings
             "game_mode": game["game_mode"],
             "digits": game["digits"],
-            "p1_name": game["p1_name"],
-            "p2_name": game["p2_name"],
-            "p1_secret": None,
-            "p2_secret": None,
+            "players": {},
+            "turn_order": [],
+            "current_idx": 0,
             "server_secret": None,
-            "p1_guesses": [],
-            "p2_guesses": [],
             "turn": "Setup",
             "end_time": None,
             "winner": None
